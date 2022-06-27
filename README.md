@@ -54,9 +54,6 @@ ts = torch.linspace(0, 1, t_size)
 ys = torchsde.sdeint(sde, y0, ts)
 ```
 
-### Notebook
-
-[`examples/demo.ipynb`](examples/demo.ipynb) gives a short guide on how to solve SDEs, including subtle points such as fixing the randomness in the solver and the choice of *noise types*.
 
 ### Latent SDE
 
@@ -67,11 +64,9 @@ The model can be loosely viewed as a [variational autoencoder](https://en.wikipe
 python -m examples.latent_sde --train-dir <TRAIN_DIR>
 ```
 The program outputs figures to the path specified by `<TRAIN_DIR>`.
-Training should stabilize after 500 iterations with the default hyperparameters.
 
-### Neural SDEs as GANs
-[`examples/sde_gan.py`](examples/sde_gan.py) learns an SDE as a GAN, as in [\[2\]](https://arxiv.org/abs/2102.03657), [\[3\]](https://arxiv.org/abs/2105.13493). The example trains an SDE as the generator of a GAN, whilst using a [neural CDE](https://github.com/patrick-kidger/NeuralCDE) [\[4\]](https://arxiv.org/abs/2005.08926) as the discriminator. This example can be run via
+Some notes for the code:
+1. the encoder maps the trajectory information xs into the latent vector.
+2. Solve the latent dynamics to get zs and project zs into xs_.
+3. Define the maximum likelihood loss to learn the generative model.
 
-```shell script
-python -m examples.sde_gan
-```

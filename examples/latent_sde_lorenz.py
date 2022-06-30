@@ -29,6 +29,7 @@ from typing import Sequence
 import fire
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import torch
 import tqdm
@@ -112,13 +113,13 @@ class LatentSDE(nn.Module):
     sde_type = "ito"
     noise_type = "diagonal"
 
-    def __init__(self, data_size, latent_size, context_size, hidden_size):
+    def __init__(self, data_size, latent_size, context_size, hidden_size, control_size=2):
         super(LatentSDE, self).__init__()
         # Encoder.
         self.encoder = Encoder(input_size=data_size, hidden_size=hidden_size, output_size=context_size)
         self.qz0_net = nn.Linear(context_size, latent_size + latent_size)
 
-        # Decoder.
+        # forward 
         self.f_net = nn.Sequential(
             nn.Linear(latent_size + context_size, hidden_size),
             nn.Softplus(),
@@ -126,13 +127,14 @@ class LatentSDE(nn.Module):
             nn.Softplus(),
             nn.Linear(hidden_size, latent_size),
         )
+
+        # This is for residual model in the latent dynamics
         self.h_net = nn.Sequential(
             nn.Linear(latent_size, hidden_size),
             nn.Softplus(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.Softplus(),
-            nn.Linear(hidden_size, latent_size),
+            nn.Linear(hidden_size, latent_size)
         )
+
         # This needs to be an element-wise function for the SDE to satisfy diagonal noise.
         self.g_nets = nn.ModuleList(
             [
@@ -145,10 +147,20 @@ class LatentSDE(nn.Module):
                 for _ in range(latent_size)
             ]
         )
+
+        self.latent_nnc = nn.Sequential(
+            nn.Linear(latent_size, hidden_size),
+            nn.Softplus(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Softplus(),
+            nn.Linear(hidden_size, control_size)
+        )
+
         self.projector = nn.Linear(latent_size, data_size)
 
-        self.pz0_mean = nn.Parameter(torch.zeros(1, latent_size))
+        self.pz0_mean = nn.Parameter(torch.zeros(1, latent_size)) #y(t=0)
         self.pz0_logstd = nn.Parameter(torch.zeros(1, latent_size))
+        self.latent_param = nn.Parameter(torch.ones(1, 2)) # l_r and l_f in the bicycle model
 
         self._ctx = None
 
@@ -160,8 +172,30 @@ class LatentSDE(nn.Module):
         i = min(torch.searchsorted(ts, t, right=True), len(ts) - 1)
         return self.f_net(torch.cat((y, ctx[i]), dim=1))
 
-    def h(self, t, y):
-        return self.h_net(y)
+    # def h(self, t, y):
+    #     return self.h_net(y)
+
+    def h(self, t, y): # y(t) -> y(t+1)
+        '''
+        Encode the vehicle bicycle model as the latent dynamics
+        reference at https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=7995816
+        y shape (batch_size, state_size 4)
+        '''
+        y0, y1, y2, y3 = y[:, 0:1], y[:, 1:2], y[:, 2:3], y[:, 3:4]
+
+        u = self.latent_nnc(y)
+        u1, u2 = u[:, 0:1], u[:, 1:2]
+
+        beta = torch.arctan( torch.tan(u2)*self.latent_param[0, 0]/(self.latent_param[0, 0] + self.latent_param[0, 1]) )
+        y0_dot = y2*torch.cos(y3 + beta)
+        y1_dot = y2*torch.sin(y3 + beta)
+        y2_dot = u1
+        y3_dot = y2/self.latent_param[0, 0]*torch.sin(beta)
+        
+        out = [y0_dot, y1_dot, y2_dot, y3_dot]
+        # return torch.cat(out, dim=1) # w/o the residual NN dynamics
+        return torch.cat(out, dim=1) + self.h_net(y)
+
 
     def g(self, t, y):  # Diagonal diffusion.
         y = torch.split(y, split_size_or_sections=1, dim=1)
@@ -272,17 +306,17 @@ def vis(xs, ts, latent_sde, bm_vis, img_path, num_samples=10):
 
 
 def main(
-        batch_size=1024,
+        batch_size=32,
         latent_size=4,
         context_size=64,
-        hidden_size=128,
+        hidden_size=32,
         lr_init=1e-2,
         t0=0.,
         t1=2.,
         lr_gamma=0.997,
         num_iters=5000,
         kl_anneal_iters=1000,
-        pause_every=50,
+        pause_every=100,
         noise_std=0.01,
         adjoint=False,
         train_dir='./dump/lorenz/',
@@ -322,6 +356,7 @@ def main(
             )
             img_path = os.path.join(train_dir, f'global_step_{global_step:06d}.pdf')
             vis(xs, ts, latent_sde, bm_vis, img_path)
+            print(f"the latent parameters is: {latent_sde.latent_param}")
 
 
 if __name__ == "__main__":
